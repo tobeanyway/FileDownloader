@@ -33,31 +33,28 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 
 /**
- * If one data insert/update and remove within 2 sec, which will do not effect on
- * {@code realDatabase}.
+ * If one data insert/update and remove within 2 sec, which will do not effect on {@code
+ * realDatabase}.
  */
 public class RemitDatabase implements FileDownloadDatabase {
 
+    private static final int WHAT_CLEAN_LOCK = 0;
     private final NoDatabaseImpl cachedDatabase;
     private final SqliteDatabaseImpl realDatabase;
-
-
-    private Handler handler;
     private final long minInterval;
 
     private final List<Integer> freeToDBIdList = new ArrayList<>();
+    private Handler handler;
     private AtomicInteger handlingId = new AtomicInteger();
     private volatile Thread parkThread;
-
-    private static final int WHAT_CLEAN_LOCK = 0;
 
     public RemitDatabase() {
         this.cachedDatabase = new NoDatabaseImpl();
         this.realDatabase = new SqliteDatabaseImpl();
         this.minInterval = FileDownloadProperties.getImpl().downloadMinProgressTime;
 
-        final HandlerThread thread = new HandlerThread(
-                FileDownloadUtils.getThreadPoolName("RemitHandoverToDB"));
+        final HandlerThread thread =
+            new HandlerThread(FileDownloadUtils.getThreadPoolName("RemitHandoverToDB"));
         thread.start();
         handler = new Handler(thread.getLooper(), new Handler.Callback() {
             @Override public boolean handleMessage(Message msg) {
@@ -72,9 +69,10 @@ public class RemitDatabase implements FileDownloadDatabase {
 
                 try {
                     handlingId.set(id);
-
-                    syncCacheToDB(id);
-                    freeToDBIdList.add(id);
+                    synchronized (freeToDBIdList) {
+                        syncCacheToDB(id);
+                        freeToDBIdList.add(id);
+                    }
                 } finally {
                     handlingId.set(0);
                     if (parkThread != null) {
@@ -106,7 +104,9 @@ public class RemitDatabase implements FileDownloadDatabase {
     }
 
     private boolean isNoNeedUpdateToRealDB(int id) {
-        return !freeToDBIdList.contains(id);
+        synchronized (freeToDBIdList) {
+            return !freeToDBIdList.contains(id);
+        }
     }
 
     @Override public void onTaskStart(int id) {
@@ -125,7 +125,6 @@ public class RemitDatabase implements FileDownloadDatabase {
         this.cachedDatabase.removeConnections(id);
         if (isNoNeedUpdateToRealDB(id)) return;
         this.realDatabase.removeConnections(id);
-
     }
 
     @Override public void insertConnectionModel(ConnectionModel model) {
@@ -152,7 +151,6 @@ public class RemitDatabase implements FileDownloadDatabase {
         this.cachedDatabase.updateConnectionCount(id, count);
         if (isNoNeedUpdateToRealDB(id)) return;
         this.realDatabase.updateConnectionCount(id, count);
-
     }
 
     @Override public void insert(FileDownloadModel downloadModel) {
@@ -178,7 +176,7 @@ public class RemitDatabase implements FileDownloadDatabase {
     }
 
     @Override public void updateOldEtagOverdue(int id, String newEtag, long sofar, long total,
-                                               int connectionCount) {
+        int connectionCount) {
         this.cachedDatabase.updateOldEtagOverdue(id, newEtag, sofar, total, connectionCount);
         if (isNoNeedUpdateToRealDB(id)) return;
         this.realDatabase.updateOldEtagOverdue(id, newEtag, sofar, total, connectionCount);
@@ -219,7 +217,9 @@ public class RemitDatabase implements FileDownloadDatabase {
             ensureCacheToDB(id);
         }
         this.realDatabase.updateError(id, throwable, sofar);
-        freeToDBIdList.remove((Integer) id);
+        synchronized (freeToDBIdList) {
+            freeToDBIdList.remove((Integer) id);
+        }
     }
 
     @Override public void updateCompleted(int id, long total) {
@@ -235,7 +235,9 @@ public class RemitDatabase implements FileDownloadDatabase {
         } else {
             this.realDatabase.updateCompleted(id, total);
         }
-        freeToDBIdList.remove((Integer) id);
+        synchronized (freeToDBIdList) {
+            freeToDBIdList.remove((Integer) id);
+        }
     }
 
     @Override public void updatePause(int id, long sofar) {
@@ -244,13 +246,14 @@ public class RemitDatabase implements FileDownloadDatabase {
             ensureCacheToDB(id);
         }
         this.realDatabase.updatePause(id, sofar);
-        freeToDBIdList.remove((Integer) id);
+        synchronized (freeToDBIdList) {
+            freeToDBIdList.remove((Integer) id);
+        }
     }
-
 
     @Override public Maintainer maintainer() {
         return this.realDatabase.maintainer(this.cachedDatabase.downloaderModelMap,
-                this.cachedDatabase.connectionModelListMap);
+            this.cachedDatabase.connectionModelListMap);
     }
 
     public static class Maker implements FileDownloadHelper.DatabaseCustomMaker {
